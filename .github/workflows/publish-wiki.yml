@@ -1,0 +1,55 @@
+name: Publish LLM Wiki to GitHub Wiki
+
+# llm-wiki/wiki/ 의 변경을 이 저장소의 GitHub Wiki(<repo>.wiki.git)로 발행한다.
+# ⚠️ 무료 플랜 + 비공개 저장소는 Wiki 탭을 쓸 수 없다(GitHub 제약). 그 경우 .wiki.git 클론이
+#    실패하므로 이 워크플로는 조용히 건너뛴다(빌드 실패 아님). 지식은 in-repo llm-wiki/ 로 유지된다.
+#    공개 저장소 또는 오너 Pro 이면 자동 발행된다(빈 Wiki 는 첫 페이지를 만들어 초기화).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'llm-wiki/wiki/**'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  publish-wiki:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout project repository
+        uses: actions/checkout@v4
+
+      - name: Publish llm-wiki/wiki → GitHub Wiki (graceful)
+        run: |
+          set -u
+          REPO="${{ github.repository }}"
+          TOK="${{ secrets.GITHUB_TOKEN }}"
+          WIKI_URL="https://x-access-token:${TOK}@github.com/${REPO}.wiki.git"
+
+          # 1) 기존 Wiki 클론 시도. 실패 = Wiki 미사용/미초기화(무료+비공개 등) → 초기화 시도.
+          if git clone "$WIKI_URL" wiki 2>/dev/null; then
+            echo "Wiki 저장소 클론 성공 — 갱신 발행."
+            cp llm-wiki/wiki/*.md wiki/
+          else
+            echo "Wiki 저장소 클론 실패 — 새로 초기화 시도(공개/Pro 여야 성공)."
+            mkdir wiki
+            cp llm-wiki/wiki/*.md wiki/
+            ( cd wiki && git init -q && git checkout -q -b master && git remote add origin "$WIKI_URL" )
+          fi
+
+          cd wiki
+          git config user.name  "github-actions"
+          git config user.email "github-actions@github.com"
+          git add .
+          git commit -q -m "Update GitHub Wiki from llm-wiki (${{ github.sha }})" || { echo "변경 없음 — 종료."; exit 0; }
+
+          # 2) push 시도. 무료+비공개면 Wiki 가 없어 실패 → 경고만 남기고 성공 종료.
+          if git push -u origin HEAD 2>push.err || git push origin HEAD 2>>push.err; then
+            echo "GitHub Wiki 발행 완료."
+          else
+            echo "::warning::Wiki 발행 건너뜀 — 이 저장소는 Wiki 탭 미사용(무료+비공개 추정). in-repo llm-wiki/ 로만 유지됨."
+            sed 's/x-access-token:[^@]*@/x-access-token:***@/g' push.err || true
+          fi
